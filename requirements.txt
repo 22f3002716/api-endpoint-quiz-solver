@@ -1,0 +1,17 @@
+# Web Server & Utilities
+fastapi
+uvicorn[standard] # ASGI server for running FastAPI
+pydantic # For data validation and schemas
+python-dotenv # For loading environment variables
+
+# Quiz Solver Core
+playwright # Headless browser
+requests # For general HTTP calls (e.g., fetching data/APIs)
+
+# LLM Orchestration (using Pydantic with an LLM SDK)
+# We will choose a standard LLM SDK that works well with Pydantic for structured output.
+# We will use the standard Pydantic library for schemas and can integrate a client like the 'google-genai' SDK for the LLM interaction.
+
+# Example LLM client (assuming Gemini or a similar service)
+google-genai
+# Or for a more generalized approach, you might use 'langchain' or 'instructor' later.
