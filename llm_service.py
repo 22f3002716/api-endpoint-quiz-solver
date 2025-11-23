@@ -1,6 +1,8 @@
 import os
 import json
-from google import genai
+# Import the standard, top-level Client.
+# This client handles both synchronous and asynchronous operations via its accessors.
+from google.genai import Client as genai_Client
 from google.genai import types
 from pydantic import BaseModel
 from typing import Optional
@@ -8,13 +10,20 @@ from logger import quiz_logger
 from models import QuizAnswerModel, CalculationToolOutput 
 
 # --- LLM Client Initialization ---
+# LLM_CLIENT will hold the asynchronous client instance (client.aio)
 
 try:
-    # Client automatically uses the LLM_API_KEY from the environment
-    LLM_CLIENT = genai.Client(api_key=os.getenv("LLM_API_KEY")) 
+    # Initialize the standard Client (synchronous object). 
+    # It automatically reads the GEMINI_API_KEY from the environment.
+    sync_client = genai_Client()
+    
+    # CRITICAL FIX: Access the asynchronous interface via the .aio accessor
+    LLM_CLIENT = sync_client.aio 
+
 except Exception as e:
+    # This should now catch initialization failures cleanly
     quiz_logger.error(f"Failed to initialize Gemini Client: {e}")
-    LLM_CLIENT = None # Handle client failure gracefully
+    LLM_CLIENT = None
 
 # --- Core LLM Interaction ---
 
@@ -28,7 +37,8 @@ async def get_structured_answer(
     the output to conform to the QuizAnswerModel Pydantic schema.
     """
     if not LLM_CLIENT:
-        raise RuntimeError("LLM client not initialized. Check LLM_API_KEY.")
+        # NOTE: Make sure your environment variable is set as GEMINI_API_KEY
+        raise RuntimeError("LLM client not initialized. Check GEMINI_API_KEY.")
 
     # 1. Construct the System Prompt (The Agent's Instructions)
     system_prompt = (
@@ -47,26 +57,22 @@ async def get_structured_answer(
 
     try:
         # 3. Call the Gemini API with Structured Output Configuration
-        # CORRECTED LINE: Use LLM_CLIENT.models.generate_content
+        # This await is now correct on the LLM_CLIENT (.aio instance)
         response = await LLM_CLIENT.models.generate_content(
             model='gemini-2.5-flash', # A fast, capable model
             contents=[user_prompt],
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
-                # This tells the model to output a JSON that validates against QuizAnswerModel
                 response_mime_type="application/json",
                 response_schema=QuizAnswerModel,
-                # Add tools here if we wanted the LLM to call them first (Advanced Agent step)
                 # tools=[CalculationToolOutput], 
             )
         )
 
         # 4. Parse the Structured JSON Output
-        # The SDK automatically handles the JSON string output and returns a Pydantic object
         if response.parsed:
             return response.parsed 
         else:
-             # This handles cases where the model refuses or fails to generate valid JSON
             quiz_logger.error(f"LLM failed structured output: {response.text}")
             raise ValueError("LLM response was not valid JSON or model refused to answer.")
 
