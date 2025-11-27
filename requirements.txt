@@ -7,6 +7,7 @@ python-dotenv # For loading environment variables
 # Quiz Solver Core
 playwright # Headless browser
 requests # For general HTTP calls (e.g., fetching data/APIs)
+beautifulsoup4 # For HTML content cleaning and parsing
 
 # LLM Orchestration (using Pydantic with an LLM SDK)
 # We will choose a standard LLM SDK that works well with Pydantic for structured output.

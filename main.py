@@ -1,20 +1,24 @@
 import asyncio 
-import platform 
-# --- WINDOWS FIX: Force ProactorEventLoop (CRITICAL) ---
+import platform
+import sys
+# --- WINDOWS FIX: Force ProactorEventLoop (CRITICAL for Playwright) ---
 # This ensures Playwright can launch its internal process on Windows.
 if platform.system() == "Windows":
-    try:
-        # Check if the current policy is SelectorEventLoopPolicy (the problematic default)
-        if isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsSelectorEventLoopPolicy):
+    # Python 3.13+ changed the default loop on Windows
+    # We need ProactorEventLoop for subprocess support (required by Playwright)
+    if sys.version_info >= (3, 8):
+        try:
             # Set the policy to WindowsProactorEventLoopPolicy
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    except AttributeError:
-        # Fallback for older Python versions or specific setups
-        pass
+        except Exception:
+            # Fallback for older Python versions or specific setups
+            pass
 # --- END WINDOWS FIX ---
 
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 # We only need BaseModel, EmailStr, HttpUrl, ConfigDict if defining them here, 
@@ -33,6 +37,41 @@ MASTER_SECRET = os.getenv("MASTER_QUIZ_SECRET")
 
 # --- 2. Initialize FastAPI App ---
 app = FastAPI(title="API Endpoint Quiz Solver")
+
+# Thread pool for running background tasks with their own event loop
+executor = ThreadPoolExecutor(max_workers=5)
+
+
+def run_quiz_in_thread(payload: QuizRequest):
+    """Run the quiz solver in a separate thread with its own event loop"""
+    # Create a new event loop for this thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Set ProactorEventLoop policy for Windows
+    if platform.system() == "Windows":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    try:
+        # Run the async function in this thread's event loop
+        loop.run_until_complete(solve_quiz_sequence(payload))
+    except Exception as e:
+        quiz_logger.error(f"Thread execution failed: {e}", exc_info=True)
+    finally:
+        loop.close()
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Ensure correct event loop policy on startup"""
+    if platform.system() == "Windows":
+        try:
+            loop = asyncio.get_running_loop()
+            quiz_logger.info(f"Main app running with event loop: {type(loop).__name__}")
+        except Exception as e:
+            quiz_logger.warning(f"Could not check event loop: {e}")
 
 # --- 3. Pydantic Models ---
 # The QuizRequest class definition and the old placeholder solve_quiz_sequence 
@@ -61,8 +100,8 @@ async def handle_quiz_request(payload: QuizRequest, background_tasks: Background
     # --- C. Delegate Task (Authorization successful) ---
     quiz_logger.info(f"SECRET OK. Delegating task to background for URL: {payload.url}")
 
-    # Start the heavy lifting in a non-blocking background task
-    background_tasks.add_task(solve_quiz_sequence, payload)
+    # Run in a separate thread with its own event loop (Windows Python 3.13 workaround)
+    executor.submit(run_quiz_in_thread, payload)
 
     # --- D. Respond Immediately ---
     return {
