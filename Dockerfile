@@ -1,6 +1,32 @@
 # 1. Base Image
 FROM python:3.11-slim
 
+# 1b. FIX: Install Playwright system dependencies using apt-get
+# This must run before installing Python packages or running Playwright binaries.
+RUN apt-get update && apt-get install -y \
+    libnss3 \
+    libnspr4 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libexpat1 \
+    libgbm1 \
+    libglib2.0-0 \
+    libgobject-2.0-0 \
+    libgtk-3-0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libasound2 \
+    libxkbcommon0 \
+    libxcb1 \
+    --no-install-recommends && rm -rf /var/lib/apt/lists/*
+
 # 2. Set environment/user
 RUN useradd -m -u 1000 user
 ENV HOME=/home/user \
