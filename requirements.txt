@@ -4,6 +4,9 @@ uvicorn[standard] # ASGI server for running FastAPI
 pydantic # For data validation and schemas
 python-dotenv # For loading environment variables
 
+# Add the missing validator:
+email-validator
+
 # Quiz Solver Core
 playwright # Headless browser
 requests # For general HTTP calls (e.g., fetching data/APIs)
