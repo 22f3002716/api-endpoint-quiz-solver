@@ -15,16 +15,22 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# 5. Copy the rest of the application code
+# 5. FIX: Install Playwright browser binaries
+# Run this command immediately after installing the python package.
+# This must be run by the root user before switching.
+RUN playwright install chromium 
+# Using 'chromium' specifically is often sufficient and faster than 'playwright install' alone.
+
+# 6. Copy the rest of the application code
 # Ensure the files are copied first. The --chown=user is good, but the explicit chown is safer.
 COPY . . 
 
-# 6. FIX: Explicitly change ownership to the non-root user (must be run by root)
+# 7. FIX: Explicitly change ownership to the non-root user (must be run by root)
 RUN chown -R user:user $HOME/app 
 
-# 7. Switch to the non-root user BEFORE CMD is run
+# 8. Switch to the non-root user BEFORE CMD is run
 USER user 
 
-# 8. Define the startup command
+# 9. Define the startup command
 EXPOSE 7860
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
