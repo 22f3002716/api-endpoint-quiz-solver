@@ -628,6 +628,23 @@ TASK: Analyze the page/data above and determine the answer.
                                                     texts_to_scan.append(part_str)
                                         except Exception:
                                             continue
+                                
+                                # If parts doesn't exist, try converting content to string
+                                elif not (hasattr(cand.content, 'parts') and cand.content.parts):
+                                    try:
+                                        content_str = str(cand.content)
+                                        if content_str and len(content_str) > 10:
+                                            texts_to_scan.append(content_str)
+                                            # Also try to extract from dict representation
+                                            if 'parts' in content_str and '[' in content_str:
+                                                import re
+                                                # Try to extract text from string like "parts=[Part(text='...')] "
+                                                text_matches = re.findall(r"text[=:]['\"](.*?)['\"]\s*(?:,|\)|\])", content_str, re.DOTALL)
+                                                for match in text_matches:
+                                                    if match and len(match) > 10:
+                                                        texts_to_scan.append(match)
+                                    except Exception:
+                                        pass
                         except Exception:
                             continue
 
@@ -704,6 +721,10 @@ TASK: Analyze the page/data above and determine the answer.
                             if first_candidate.content.parts:
                                 quiz_logger.error(f"First candidate parts count: {len(first_candidate.content.parts)}")
                                 quiz_logger.error(f"First candidate parts[0]: {str(first_candidate.content.parts[0])[:500]}")
+                            else:
+                                # Log the content object itself when parts doesn't exist
+                                content_str = str(first_candidate.content)[:1000]
+                                quiz_logger.error(f"First candidate content (str): {content_str}")
                         quiz_logger.error(f"texts_to_scan length: {len(texts_to_scan)}")
                         for i, txt in enumerate(texts_to_scan[:3]):
                             quiz_logger.error(f"texts_to_scan[{i}] preview: {txt[:300] if txt else 'EMPTY'}")
