@@ -1,26 +1,30 @@
+# 1. Base Image
 FROM python:3.11-slim
 
-# Create the same UID (1000) that Spaces uses when running your container
+# 2. Set environment/user
 RUN useradd -m -u 1000 user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
 
-# Install Python dependencies before copying the entire source tree
-WORKDIR /home/user/app
-COPY --chown=user requirements.txt .
+# 3. Set Working Directory
+WORKDIR $HOME/app
+
+# 4. Copy requirements and install dependencies (still running as root here)
+COPY requirements.txt .
+# Combine these RUN commands for better performance
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the app and switch to the non-root user
-COPY --chown=user . .
-USER user
-ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
+# 5. Copy the rest of the application code
+# Ensure the files are copied first. The --chown=user is good, but the explicit chown is safer.
+COPY . . 
 
-# 6. FIX: Explicitly ensure the non-root user owns the app directory
-# This step gives the 'user' ID 1000 the right to create files like logs.
-# -R means recursive, applying to all files/folders inside $HOME/app.
-RUN chown -R user:user $HOME/app
+# 6. FIX: Explicitly change ownership to the non-root user (must be run by root)
+RUN chown -R user:user $HOME/app 
 
+# 7. Switch to the non-root user BEFORE CMD is run
+USER user 
+
+# 8. Define the startup command
 EXPOSE 7860
-
-ENV MY_SETTING=default_value
-
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
