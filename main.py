@@ -109,6 +109,11 @@ async def handle_quiz_request(payload: QuizRequest, background_tasks: Background
         "url": str(payload.url)
     }
 
+@app.get("/")
+async def root():
+    """Simple root endpoint."""
+    return {"status": "ok", "service": app.title}
+    
 # --- 5. Health Check Endpoint ---
 
 @app.get("/health", tags=["Monitoring"])
