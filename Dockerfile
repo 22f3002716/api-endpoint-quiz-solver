@@ -14,6 +14,11 @@ COPY --chown=user . .
 USER user
 ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
 
+# 6. FIX: Explicitly ensure the non-root user owns the app directory
+# This step gives the 'user' ID 1000 the right to create files like logs.
+# -R means recursive, applying to all files/folders inside $HOME/app.
+RUN chown -R user:user $HOME/app
+
 EXPOSE 7860
 
 ENV MY_SETTING=default_value
