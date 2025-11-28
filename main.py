@@ -108,3 +108,10 @@ async def handle_quiz_request(payload: QuizRequest, background_tasks: Background
         "message": "Quiz task accepted and processing in the background.",
         "url": str(payload.url)
     }
+
+# --- 5. Health Check Endpoint ---
+
+@app.get("/health", tags=["Monitoring"])
+async def health_check():
+    """Simple health check endpoint."""
+    return {"status": "ok", "service": app.title}
