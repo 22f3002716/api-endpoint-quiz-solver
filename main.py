@@ -33,7 +33,7 @@ from models import QuizRequest # <-- NEW IMPORT of the Pydantic Model definition
 
 # --- 1. Load Environment Variables ---
 load_dotenv()
-MASTER_SECRET = os.getenv("MASTER_QUIZ_SECRET")
+MASTER_SECRET = os.getenv("WEBHOOK_SECRET") #changed from MASTER_QUIZ_SECRET to WEBHOOK_SECRET
 
 # --- 2. Initialize FastAPI App ---
 app = FastAPI(title="API Endpoint Quiz Solver")
