@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
-LOG_FILE = os.getenv("LOG_FILE_PATH", "default_quiz_solver.log")
+LOG_FILE = os.getenv('LOG_FILE_PATH', '/home/user/app/default_quiz_solver.log')
 
 # --- Logging Configuration ---
 logging.basicConfig(
