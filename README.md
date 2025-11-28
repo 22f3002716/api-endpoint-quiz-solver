@@ -1,3 +1,4 @@
+---
 title: API ENDPOINT QUIZ SOLVER
 emoji: ⚡
 colorFrom: indigo
@@ -6,7 +7,7 @@ sdk: docker
 pinned: false
 license: mit
 short_description: TDS Project2
-
+---
  # 🎯 API Endpoint Quiz Solver
 
 An intelligent, automated quiz-solving system powered by Google's Gemini AI that navigates multi-stage web quizzes, analyzes questions, processes data, and submits answers with high accuracy.
