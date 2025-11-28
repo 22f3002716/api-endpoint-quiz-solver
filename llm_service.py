@@ -152,10 +152,15 @@ def download_media_file(url: str, media_type: str) -> Optional[str]:
 
 
 # --- OPTIMIZATION: Adaptive Token Limits ---
-def estimate_stage_complexity(scraped_data: str, question_text: str) -> str:
+def estimate_stage_complexity(scraped_data: str, question_text: str, has_canvas: bool = False) -> str:
     """
     Estimates the complexity of a quiz stage to determine appropriate token limits.
-    Returns: 'simple', 'medium', or 'complex'
+    Returns: 'simple', 'medium', 'complex', or 'very_complex'
+    
+    Args:
+        scraped_data: The scraped page content (may be cleaned HTML)
+        question_text: The question text
+        has_canvas: Whether page contains canvas element (passed directly to avoid detection issues)
     """
     data_length = len(scraped_data)
     
@@ -189,14 +194,21 @@ def estimate_stage_complexity(scraped_data: str, question_text: str) -> str:
         data_length > 700
     )
     
+    # Canvas detection now uses passed flag (more reliable than text search)
+    
     # Special case: Audio/video with calculation = complex (requires transcription + processing)
+    # Also detect when CSV is mentioned alongside audio (common pattern)
     is_media_with_calc = (
         any(media in text_lower for media in ['audio', 'video', 'image']) and
-        any(calc in text_lower for calc in ['sum', 'calculate', 'cutoff', 'filter'])
+        (any(calc in text_lower for calc in ['sum', 'calculate', 'cutoff', 'filter']) or
+         'csv' in text_lower or data_length > 3000)  # Audio + large data or CSV
     )
     
     # Decision logic
-    if is_media_with_calc:
+    if has_canvas:
+        # Canvas challenges need maximum tokens for complex visual processing
+        return 'very_complex'
+    elif is_media_with_calc:
         # Audio/video with calculation (e.g., transcribe cutoff → filter CSV → sum)
         # Needs extra tokens for transcription + data processing + reasoning
         return 'very_complex'
@@ -214,18 +226,23 @@ def estimate_stage_complexity(scraped_data: str, question_text: str) -> str:
         return 'simple'   # Simple extraction/lookup
     
 
-def get_adaptive_token_limit(scraped_data: str, question_text: str) -> int:
+def get_adaptive_token_limit(scraped_data: str, question_text: str, has_canvas: bool = False) -> int:
     """
     Returns appropriate max_output_tokens based on stage complexity.
     Target: 30-50% token savings on simple stages without compromising accuracy.
+    
+    Args:
+        scraped_data: The scraped page content
+        question_text: The question text
+        has_canvas: Whether page contains canvas element
     """
-    complexity = estimate_stage_complexity(scraped_data, question_text)
+    complexity = estimate_stage_complexity(scraped_data, question_text, has_canvas)
     
     token_limits = {
         'simple': 512,         # Basic extraction, single value answers
         'medium': 1536,        # Moderate calculations, small datasets (increased for regex/validation)
         'complex': 2048,       # Large CSV/JSON, multi-step reasoning
-        'very_complex': 4096   # Large dataset + audio/video transcription + complex calculation
+        'very_complex': 4096   # Audio/video transcription + data analysis (balanced for performance)
     }
     
     limit = token_limits[complexity]
@@ -244,7 +261,9 @@ async def get_structured_answer(
     page_url: str,
     error_feedback: Optional[str] = None,
     use_fast_model: bool = False,
-    raw_html: str = ""
+    raw_html: str = "",
+    has_canvas: bool = False,
+    canvas_image_path: Optional[str] = None
 ) -> QuizAnswerModel:
     """
     Calls the LLM to process the question and scraped data, forcing 
@@ -288,7 +307,10 @@ async def get_structured_answer(
         "• Video files: Extract any text, speech, or visual information if provided\n"
         "• Images: Analyze for text (OCR), codes, numbers, or visual patterns if provided as input\n"
         "• Data files (CSV/JSON): Will be included in the prompt text - analyze them directly\n"
-        "• IMPORTANT: Always look for contextual data like cutoff values, thresholds, parameters displayed on the page\n\n"
+        "• IMPORTANT: Always look for contextual data like cutoff values, thresholds, parameters displayed on the page\n"
+        "• AUDIO + CSV TASKS: Transcribe audio for threshold → filter CSV rows → sum the specified column\n"
+        "  Example: Audio says '15000' → Filter rows where column >= 15000 → Sum those values ONLY\n"
+        "  CRITICAL: Apply the filter condition BEFORE summing. Do NOT sum all rows.\n\n"
         
         "CRITICAL INSTRUCTIONS:\n"
         "• ALWAYS scan the ENTIRE page for: cutoff values, thresholds, parameters, constraints\n"
@@ -299,8 +321,12 @@ async def get_structured_answer(
         "• If asked to POST specific JSON: Extract the EXACT answer value from the instructions\n"
         "• For 'what is your secret': Return the secret code from context\n"
         "• For aggregations with conditions: Apply filters (>=, <=, etc.) BEFORE computing sum/average\n"
+        "  - STEP 1: Filter data rows based on condition\n"
+        "  - STEP 2: Extract values from filtered rows only\n"
+        "  - STEP 3: Sum/average ONLY the filtered values\n"
         "• For COMPLEX CALCULATIONS: Show step-by-step breakdown in reasoning_summary to verify accuracy\n"
-        "• DOUBLE-CHECK all arithmetic before submitting - verify sums, products, and formulas\n\n"
+        "• DOUBLE-CHECK all arithmetic before submitting - verify sums, products, and formulas\n"
+        "• VERIFY: Count how many rows match the filter, list first few filtered values, then compute sum\n\n"
         
         "OUTPUT FORMAT:\n"
         "• 'final_answer': ONLY the answer value - NEVER the full JSON structure\n"
@@ -335,10 +361,14 @@ CONTEXT:
 Email: {email}
 Secret: {secret}
 
-TASK: Extract the answer from the page/data above.
+TASK: Analyze the page/data above and determine the answer.
+- Extract if answer is explicitly stated
+- Calculate/aggregate if question requires computation (sum, average, count, filter)
+- Transcribe if audio/video contains the answer
+- Apply logic if conditions/rules are specified
 - If "what is your secret": return {secret}
-- If filtering/sum: apply condition (>=cutoff) FIRST, then calculate
-- Return ONLY the final value, NO JSON wrapping
+- If filtering task (e.g., sum where value >= X): Apply condition FIRST, then calculate on filtered data only
+- Return ONLY the final answer value, NO JSON structure wrapping
 """
     if error_feedback:
         user_prompt += f"\n\nPREVIOUS ERROR: {error_feedback}\nFix: Return plain value only.\n"
@@ -375,6 +405,23 @@ TASK: Extract the answer from the page/data above.
         
         # Now create content_parts with updated prompt
         content_parts = [user_prompt]
+        
+        # Add canvas image if available (for alphametic/visual puzzles)
+        if canvas_image_path and Path(canvas_image_path).exists():
+            try:
+                with open(canvas_image_path, 'rb') as f:
+                    canvas_image_data = f.read()
+                content_parts.append(types.Part.from_bytes(
+                    data=canvas_image_data,
+                    mime_type='image/png'
+                ))
+                quiz_logger.info(f"🎨 Added canvas image to multimodal input ({len(canvas_image_data)} bytes)")
+                # Update prompt to explicitly ask about the canvas image
+                content_parts[0] += "\n\n🎨 IMPORTANT: A canvas image is attached showing an alphametic puzzle. " \
+                                    "Please read the puzzle directly from the image and extract the required key/answer. " \
+                                    "The image shows letters with their numeric values - extract those digits in the specified order."
+            except Exception as e:
+                quiz_logger.warning(f"⚠️ Could not add canvas image: {e}")
         
         # Second pass: add audio/video/image to content_parts
         for media_type, local_path, file_data in audio_video_image_files:
@@ -414,7 +461,8 @@ TASK: Extract the answer from the page/data above.
         
         # 3. Call the Gemini API with Structured Output Configuration
         model_name = 'gemini-2.5-flash'
-        has_media = any(media_type in ['audio', 'video', 'image'] for media_type, _, _ in audio_video_image_files)
+        has_media = any(media_type in ['audio', 'video', 'image'] for media_type, _, _ in audio_video_image_files) or \
+                    (canvas_image_path and Path(canvas_image_path).exists())
         
         # Get stage complexity for token limit
         complexity = estimate_stage_complexity(scraped_data, question_text)
@@ -434,7 +482,7 @@ TASK: Extract the answer from the page/data above.
         response = None
         
         # OPTIMIZATION: Get adaptive token limit based on complexity
-        max_tokens = get_adaptive_token_limit(scraped_data, question_text)
+        max_tokens = get_adaptive_token_limit(scraped_data, question_text, has_canvas)
         
         # OPTIMIZATION: Rate limiting protection
         rate_limiter = get_rate_limiter()
@@ -540,13 +588,132 @@ TASK: Extract the answer from the page/data above.
             quiz_logger.error(f"LLM failed structured output. Response.parsed is None")
             quiz_logger.error(f"Response.text: {response.text[:500] if response.text else 'None'}")
             quiz_logger.error(f"Response candidates: {len(response.candidates) if response.candidates else 0}")
-            if response.candidates and len(response.candidates) > 0:
-                first_candidate = response.candidates[0]
-                quiz_logger.error(f"First candidate finish_reason: {first_candidate.finish_reason}")
-                quiz_logger.error(f"First candidate safety_ratings: {first_candidate.safety_ratings}")
-                if first_candidate.content and first_candidate.content.parts:
-                    quiz_logger.error(f"First candidate parts count: {len(first_candidate.content.parts)}")
-                    quiz_logger.error(f"First candidate parts[0]: {str(first_candidate.content.parts[0])[:200]}")
+            # Attempt a robust fallback parser to extract JSON-like substrings or key/value pairs
+            try:
+                texts_to_scan = []
+                if response.text:
+                    texts_to_scan.append(response.text)
+
+                if response.candidates:
+                    for cand in response.candidates:
+                        try:
+                            # Try to get text from candidate directly first
+                            if hasattr(cand, 'text') and cand.text:
+                                texts_to_scan.append(cand.text)
+                            
+                            # Then check content attribute
+                            if hasattr(cand, 'content') and cand.content:
+                                # Try content.text if it exists
+                                if hasattr(cand.content, 'text') and cand.content.text:
+                                    texts_to_scan.append(cand.content.text)
+                                
+                                # Try content.parts if it exists
+                                if hasattr(cand.content, 'parts') and cand.content.parts:
+                                    for part in cand.content.parts:
+                                        try:
+                                            # Try to get text attribute first, fallback to str()
+                                            if hasattr(part, 'text') and part.text:
+                                                texts_to_scan.append(part.text)
+                                            else:
+                                                part_str = str(part)
+                                                if 'text=' in part_str or 'text:' in part_str:
+                                                    # Extract text from string representation like "text='actual content'"
+                                                    import re
+                                                    text_match = re.search(r"text[=:]['\"](.*?)['\"]\s*(?:,|\))", part_str, re.DOTALL)
+                                                    if text_match:
+                                                        texts_to_scan.append(text_match.group(1))
+                                                    else:
+                                                        texts_to_scan.append(part_str)
+                                                else:
+                                                    texts_to_scan.append(part_str)
+                                        except Exception:
+                                            continue
+                        except Exception:
+                            continue
+
+                # Helper: try to extract JSON object from text
+                def try_extract_json(s: str):
+                    if not s or '{' not in s:
+                        return None
+                    # Try full-load first
+                    try:
+                        return json.loads(s)
+                    except Exception:
+                        pass
+                    # Try to find simple JSON-like substrings { ... }
+                    json_candidates = re.findall(r'\{[\s\S]{0,2000}?\}', s)
+                    for jc in json_candidates:
+                        try:
+                            return json.loads(jc)
+                        except Exception:
+                            continue
+                    return None
+
+                # Helper: extract answer key via regex (final_answer / answer)
+                def try_extract_kv(s: str):
+                    if not s:
+                        return None
+                    # Look for "final_answer": "..." or 'final_answer': '...'
+                    m = re.search(r'"final_answer"\s*:\s*"([^"]+)"', s)
+                    if m:
+                        return m.group(1)
+                    m = re.search(r"'final_answer'\s*:\s*'([^']+)'", s)
+                    if m:
+                        return m.group(1)
+                    # Look for "answer": value
+                    m = re.search(r'"answer"\s*:\s*"([^"]+)"', s)
+                    if m:
+                        return m.group(1)
+                    m = re.search(r'"answer"\s*:\s*([^,\}\]]+)', s)
+                    if m:
+                        return m.group(1).strip().strip('"').strip("'")
+                    # Numeric answers without quotes
+                    m = re.search(r'"final_answer"\s*:\s*([0-9]+)', s)
+                    if m:
+                        return m.group(1)
+                    return None
+
+                for text_blob in texts_to_scan:
+                    try:
+                        j = try_extract_json(text_blob)
+                        if j and isinstance(j, dict):
+                            for key in ('final_answer', 'answer', 'value', 'result', 'secret'):
+                                if key in j:
+                                    val = j[key]
+                                    qa = QuizAnswerModel(final_answer=str(val), reasoning_summary='Parsed from LLM text fallback (json)')
+                                    quiz_logger.warning(f"🔧 Fallback parsed answer from JSON substring: {val}")
+                                    return qa
+                        # If JSON not found, try key/value regex
+                        kv = try_extract_kv(text_blob)
+                        if kv:
+                            qa = QuizAnswerModel(final_answer=str(kv), reasoning_summary='Parsed from LLM text fallback (kv)')
+                            quiz_logger.warning(f"🔧 Fallback parsed answer from text regex: {kv}")
+                            return qa
+                    except Exception as e:
+                        quiz_logger.debug(f"Fallback scan error: {e}")
+
+                # No fallback found - log extra candidate details for diagnosis
+                if response.candidates and len(response.candidates) > 0:
+                    first_candidate = response.candidates[0]
+                    try:
+                        quiz_logger.error(f"First candidate finish_reason: {first_candidate.finish_reason}")
+                        quiz_logger.error(f"First candidate safety_ratings: {first_candidate.safety_ratings}")
+                        quiz_logger.error(f"First candidate has content: {hasattr(first_candidate, 'content') and first_candidate.content is not None}")
+                        if first_candidate.content:
+                            quiz_logger.error(f"First candidate content.parts exists: {hasattr(first_candidate.content, 'parts') and first_candidate.content.parts is not None}")
+                            if first_candidate.content.parts:
+                                quiz_logger.error(f"First candidate parts count: {len(first_candidate.content.parts)}")
+                                quiz_logger.error(f"First candidate parts[0]: {str(first_candidate.content.parts[0])[:500]}")
+                        quiz_logger.error(f"texts_to_scan length: {len(texts_to_scan)}")
+                        for i, txt in enumerate(texts_to_scan[:3]):
+                            quiz_logger.error(f"texts_to_scan[{i}] preview: {txt[:300] if txt else 'EMPTY'}")
+                    except Exception as diag_ex:
+                        quiz_logger.error(f"Diagnostic exception: {diag_ex}")
+
+            except Exception as ex:
+                quiz_logger.debug(f"Exception during fallback parsing: {ex}")
+
+            # If nothing worked, raise the original error
             raise ValueError("LLM response was not valid JSON or model refused to answer.")
 
     except Exception as e:
@@ -561,3 +728,12 @@ TASK: Extract the answer from the page/data above.
                     quiz_logger.debug(f"🗑️  Cleaned up: {file_path}")
             except Exception as cleanup_error:
                 quiz_logger.warning(f"Failed to cleanup {file_path}: {cleanup_error}")
+        
+        # Cleanup canvas image if it was created
+        if canvas_image_path:
+            try:
+                if os.path.exists(canvas_image_path):
+                    os.remove(canvas_image_path)
+                    quiz_logger.debug(f"🗑️  Cleaned up canvas image: {canvas_image_path}")
+            except Exception as cleanup_error:
+                quiz_logger.warning(f"Failed to cleanup canvas image {canvas_image_path}: {cleanup_error}")

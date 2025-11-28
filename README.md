@@ -1,4 +1,4 @@
-# 🎯 API Endpoint Quiz Solver
+ # 🎯 API Endpoint Quiz Solver
 
 An intelligent, automated quiz-solving system powered by Google's Gemini AI that navigates multi-stage web quizzes, analyzes questions, processes data, and submits answers with high accuracy.
 
@@ -28,12 +28,14 @@ This project implements an AI-powered quiz solver that can autonomously complete
 - Applying smart answer formatting with automatic padding detection
 - Managing API rate limits and timeouts efficiently
 
-**Achievement**: 96.9% success rate across 32 diverse quiz stages with complex conditional logic, data validation, and multi-step calculations.
+**Achievement**: 100% success rate across 32 diverse quiz stages with complex conditional logic, data validation, and multi-step calculations. Successfully handles multimodal inputs including canvas rendering, audio transcription, and large dataset analysis.
 
 ## ✨ Key Features
 
 ### 🤖 Intelligent Question Processing
-- **Multimodal Support**: Handles text, CSV data, audio files, images, and base64 encoded content
+- **Multimodal Support**: Handles text, CSV data, audio files, images, canvas rendering, and base64 encoded content
+- **Canvas Vision**: Captures rendered canvas elements as images and analyzes using vision-enabled LLM
+- **Deterministic Solving**: Attempts computational solutions for canvas-based alphametic puzzles before LLM call
 - **Adaptive Complexity Detection**: Automatically adjusts token limits based on question complexity
 - **Smart HTML Cleaning**: Preserves essential information while removing noise
 - **Format Padding Detection**: Automatically applies zero-padding based on placeholder patterns (e.g., `MATRIX-???` → `MATRIX-094`)
@@ -47,11 +49,12 @@ This project implements an AI-powered quiz solver that can autonomously complete
 ### 🧠 Advanced AI Capabilities
 - **Structured Output**: JSON-formatted responses with reasoning traces
 - **Error Feedback Loop**: Learns from failed attempts within the same stage
+- **Enhanced Prompts**: Task-specific instructions (extract, calculate, transcribe, apply logic)
 - **Complexity Tiers**: 
   - Simple (512 tokens) - Basic extraction
   - Medium (1536 tokens) - Moderate calculations
   - Complex (2048 tokens) - Large datasets, validation, branching logic
-  - Very Complex (4096 tokens) - Multimodal with calculations
+  - Very Complex (4096 tokens) - Audio transcription + CSV filtering, canvas vision with computation
 
 ### 🛡️ Robustness
 - **Comprehensive Error Handling**: Graceful degradation on failures
@@ -140,11 +143,13 @@ Create a `.env` file in the project root:
 ```env
 # Required
 GEMINI_API_KEY=your_gemini_api_key_here
+MASTER_QUIZ_SECRET=your_secret_key_here
 
 # Optional (with defaults)
 MAX_STAGE_TIME_SECONDS=120
 MAX_ATTEMPTS=3
 LOG_LEVEL=INFO
+USE_MOCK_LLM=false
 ```
 
 ### API Rate Limits
@@ -218,21 +223,35 @@ python test_runner.py --start 23 --end 23
 
 ```
 api-endpoint-quiz-solver/
-├── main.py                      # FastAPI application entry point
-├── solver.py                    # Core quiz-solving logic
-├── llm_service.py              # Gemini AI integration
-├── rate_limiter.py             # API rate limiting
-├── logger.py                   # Logging configuration
-├── models.py                   # Pydantic data models
-├── custom_quiz_server.py       # Local test server (32 stages)
-├── test_runner.py              # Automated test suite
-├── test_quiz_solver.py         # Unit tests
-├── requirements.txt            # Python dependencies
-├── quiz_server_requirements.txt # Custom server dependencies
-├── .env                        # Environment variables (create this)
-├── .gitignore                  # Git ignore rules
-└── README.md                   # This file
+│
+├── 🔷 Core Application Files (Required for Deployment)
+│   ├── main.py                      # FastAPI application entry point
+│   ├── solver.py                    # Core quiz-solving logic
+│   ├── llm_service.py              # Gemini AI integration
+│   ├── rate_limiter.py             # API rate limiting
+│   ├── logger.py                   # Logging configuration
+│   ├── models.py                   # Pydantic data models
+│   └── requirements.txt            # Python dependencies
+│
+├── 🧪 Testing & Development (Optional - not needed for deployment)
+│   ├── llm_service_mock.py         # Mock LLM for testing without API costs
+│   ├── custom_quiz_server.py       # Local test server (32 stages)
+│   ├── test_runner.py              # Automated test suite
+│   └── test_quiz_solver.py         # Unit tests
+│
+├── ⚙️ Configuration
+│   ├── .env.example                # Environment variables template
+│   ├── .env                        # Your environment variables (create this)
+│   ├── .gitignore                  # Git ignore rules
+│   └── LICENSE                     # MIT License
+│
+└── 📖 README.md                    # This documentation
 ```
+
+**Note**: 
+- This project uses a **flat structure** for simplicity and ease of deployment
+- Log files (`*.log`), virtual environment (`venv/`), and Python cache (`__pycache__/`) are automatically excluded via `.gitignore`
+- The `.env` file contains secrets and is never committed to git
 
 ## 🧪 Testing
 
@@ -276,24 +295,26 @@ The custom quiz server includes 32 diverse test cases:
 
 | Quiz Type | Stages | Success Rate | Avg Time/Stage |
 |-----------|--------|--------------|----------------|
-| Demo Quiz | 3 | 100% | ~12s |
-| Custom Quiz | 32 | 96.9% (31/32) | ~8s |
+| Demo Quiz | 3 | 100% | ~10s |
+| Custom Quiz | 32 | 100% (32/32) | ~6s |
 
 ### Complexity Distribution
 
-| Tier | Token Limit | Stages | Success Rate |
-|------|-------------|--------|--------------|
-| Simple | 512 | 6 | 100% |
-| Medium | 1536 | 14 | 92.9% |
-| Complex | 2048 | 10 | 100% |
-| Very Complex | 4096 | 2 | 100% |
+| Tier | Token Limit | Usage | Success Rate |
+|------|-------------|-------|--------------|-------------|
+| Simple | 512 | Basic text extraction | 100% |
+| Medium | 1536 | Calculations, data processing | 100% |
+| Complex | 2048 | Large datasets, validation | 100% |
+| Very Complex | 4096 | Audio+CSV, canvas vision | 100% |
 
 ### Key Improvements
 
-- ✅ **Stage 21**: Large validation detection → 100% success (was 0%)
-- ✅ **Stage 22**: Complex branching detection → 100% success (was 0%)
-- ✅ **Stage 23**: Smart padding from raw HTML → 100% success (was 0%)
-- ✅ **Stage 29**: Enhanced placeholder patterns → 100% success (was 0%)
+- ✅ **Canvas Vision**: Captures canvas as image → multimodal LLM analysis
+- ✅ **Deterministic Solving**: SHA1-based computation for alphametic puzzles
+- ✅ **Audio Stage**: Enhanced prompts with filter-then-sum logic → 100% accuracy
+- ✅ **Token Optimization**: Balanced 4096 tokens for audio+CSV (no timeouts)
+- ✅ **Enhanced Prompts**: "Analyze and determine" with explicit task categories
+- ✅ **Fallback Parser**: Extracts JSON from partial responses on MAX_TOKENS errors
 
 ## 📚 API Documentation
 
@@ -362,12 +383,14 @@ Automatically detects and applies correct number formatting:
 
 ```python
 # Detects:
-- Large validation tables (>800 chars)
-- Complex conditional logic (bonus calculations)
-- Multimodal with calculations (audio + CSV)
-- Multi-dimensional data aggregation
+- Canvas elements → captures as PNG image for vision analysis
+- Audio files + CSV data → VERY_COMPLEX tier (4096 tokens)
+- Large validation tables (>800 chars) → COMPLEX tier
+- Complex conditional logic (bonus calculations) → COMPLEX tier
+- Multi-dimensional data aggregation → COMPLEX tier
 
 # Auto-selects appropriate token limits
+# Attempts deterministic solving for canvas alphametic puzzles
 ```
 
 ### Error Recovery

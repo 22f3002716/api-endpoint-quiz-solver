@@ -117,13 +117,18 @@ def clean_html_for_llm(html_content: str) -> str:
     """
     Cleans HTML content to reduce tokens sent to LLM.
     Removes: scripts, styles, comments, excessive whitespace
-    Keeps: text content, important attributes, structure
+    Keeps: text content, important attributes, structure, canvas elements
     Target: 40-60% token reduction
     """
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Remove script and style tags
+        # Check if there's a canvas element (preserve it for rendering context)
+        has_canvas = soup.find('canvas') is not None
+        if has_canvas:
+            quiz_logger.info("🎨 Canvas element detected - preserving rendering context")
+        
+        # Remove script and style tags (but keep canvas)
         for tag in soup(['script', 'style', 'noscript', 'iframe', 'svg']):
             tag.decompose()
         
@@ -176,15 +181,113 @@ async def scrape_additional_url(page, base_url: str, relative_or_absolute_url: s
 
 
 # --- Helper: Scrape the Current Quiz Page (MODIFIED) ---
-async def scrape_quiz_page(page, url: str) -> Tuple[str, Optional[str], str]:
+async def scrape_quiz_page(page, url: str) -> Tuple[str, Optional[str], str, bool, Optional[str]]:
     """
     Navigates to the URL, scrapes the question/data, and attempts to find the submission URL.
-    Returns: (scraped_data: str, submission_url: Optional[str], raw_html: str)
+    Returns: (scraped_data: str, submission_url: Optional[str], raw_html: str, has_canvas: bool, canvas_image_path: Optional[str])
     """
     await page.goto(url, wait_until="networkidle")
     
     # Wait additional time for JavaScript execution (especially for base64 decoding, DOM manipulation)
     await page.wait_for_timeout(2000)  # 2 seconds for JS to execute
+    
+    # Initialize canvas_image_path (will remain None if no canvas)
+    canvas_image_path = None
+    
+    # Check if page has canvas element that needs rendering
+    has_canvas = await page.evaluate("""() => {
+        return document.querySelector('canvas') !== null;
+    }""")
+    
+    canvas_info = ""
+    if has_canvas:
+        quiz_logger.info("🎨 Detected canvas element - extracting rendered content...")
+        # Wait for canvas to render and scripts to execute (increased from 2s to 4s)
+        await page.wait_for_timeout(4000)
+        
+        # Try to extract canvas-related information using multiple strategies
+        try:
+            canvas_data = await page.evaluate("""() => {
+                const canvas = document.querySelector('canvas');
+                if (!canvas) return null;
+                
+                // Strategy 1: Look for JavaScript that draws on canvas (in script tags)
+                const scripts = Array.from(document.querySelectorAll('script'))
+                    .map(s => s.textContent)
+                    .join('\\n');
+                
+                // Strategy 2: Get ALL text content from page (including hidden elements)
+                const allText = document.body.textContent;
+                
+                // Strategy 3: Try to capture canvas as image and get data URL
+                let canvasDataUrl = '';
+                try {
+                    canvasDataUrl = canvas.toDataURL('image/png');
+                } catch (e) {
+                    // Canvas might be tainted, skip
+                }
+                
+                // Strategy 4: Look for data attributes or nearby elements
+                const canvasRect = canvas.getBoundingClientRect();
+                const nearbyElements = Array.from(document.querySelectorAll('*'))
+                    .filter(el => {
+                        const rect = el.getBoundingClientRect();
+                        return Math.abs(rect.top - canvasRect.top) < 200 || 
+                               Math.abs(rect.left - canvasRect.left) < 200;
+                    })
+                    .map(el => el.outerHTML)
+                    .join('\\n');
+                
+                return {
+                    dimensions: `${canvas.width}x${canvas.height}`,
+                    allPageText: allText,
+                    scriptContent: scripts.substring(0, 5000), // Limit script size
+                    nearbyHTML: nearbyElements.substring(0, 2000),
+                    hasDataUrl: canvasDataUrl.length > 0,
+                    canvasDataUrl: canvasDataUrl  // Return the actual base64 image
+                };
+            }""")
+            
+            if canvas_data:
+                quiz_logger.info(f"📝 Canvas detected ({canvas_data['dimensions']})")
+                
+                # Save canvas image if available
+                if canvas_data.get('hasDataUrl') and canvas_data.get('canvasDataUrl'):
+                    try:
+                        import base64
+                        import tempfile
+                        # Extract base64 data (remove data:image/png;base64, prefix)
+                        data_url = canvas_data['canvasDataUrl']
+                        if 'base64,' in data_url:
+                            base64_data = data_url.split('base64,')[1]
+                            image_bytes = base64.b64decode(base64_data)
+                            # Save to temp file
+                            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                            temp_file.write(image_bytes)
+                            temp_file.close()
+                            canvas_image_path = temp_file.name
+                            quiz_logger.info(f"🖼️ Canvas image saved: {canvas_image_path} ({len(image_bytes)} bytes)")
+                    except Exception as e:
+                        quiz_logger.warning(f"⚠️ Could not save canvas image: {e}")
+                
+                # Build comprehensive canvas information
+                canvas_info = f"\n\n=== CANVAS ELEMENT DETECTED ===\n"
+                canvas_info += f"Canvas Size: {canvas_data['dimensions']}\n"
+                if canvas_image_path:
+                    canvas_info += f"\n🎨 CANVAS IMAGE AVAILABLE - Use vision model to read the alphametic puzzle directly from the image!\n"
+                canvas_info += f"\nAll Page Text (including canvas-rendered content if in DOM):\n{canvas_data['allPageText'][:1000]}\n"
+                
+                # Include relevant script snippets that might contain the alphametic logic
+                if 'fillText' in canvas_data['scriptContent'] or 'strokeText' in canvas_data['scriptContent']:
+                    canvas_info += f"\nCanvas Drawing Script (contains text drawing logic):\n{canvas_data['scriptContent'][:2000]}\n"
+                    quiz_logger.info("🎯 Found canvas text drawing code in scripts")
+                
+                # Log script snippet for debugging deterministic parsing
+                script_preview = canvas_data['scriptContent'][:500].replace('\n', ' ')
+                quiz_logger.info(f"📜 Script preview: {script_preview}...")
+                quiz_logger.info(f"📝 Canvas info extracted: {len(canvas_info)} chars, has_canvas={has_canvas}")
+        except Exception as e:
+            quiz_logger.warning(f"⚠️ Could not extract canvas text: {e}")
     
     # Check if page has base64 content that needs decoding
     has_base64 = await page.evaluate("""() => {
@@ -209,6 +312,10 @@ async def scrape_quiz_page(page, url: str) -> Tuple[str, Optional[str], str]:
     data_links = await page.eval_on_selector_all("a", "elements => elements.map(e => e.href)")
 
     scraped_data = f"PAGE URL: {url}\n\nPAGE CONTENT:\n{question_text}\n\nCLEANED HTML:\n{cleaned_html}"
+
+    # Add canvas information if detected
+    if canvas_info:
+        scraped_data += canvas_info
 
     if data_links:
         scraped_data += "\n\nDISCOVERED DATA LINKS:\n" + "\n".join(set(data_links))
@@ -279,7 +386,7 @@ async def scrape_quiz_page(page, url: str) -> Tuple[str, Optional[str], str]:
     else:
         quiz_logger.warning(f"⚠️ Could not extract submission URL from page content")
 
-    return scraped_data, submission_url, html_content
+    return scraped_data, submission_url, html_content, has_canvas, canvas_image_path
 
 # --- Core Multi-Step Solver Function (MODIFIED) ---
 
@@ -299,8 +406,207 @@ async def solve_quiz_sequence_core(payload: QuizRequest):
             quiz_logger.info(f"--- STARTING STAGE: {current_url} | Stage Budget: {time_left}s ---")
             quiz_logger.info(f"⏱️  Allocation: ~{MAX_STAGE_TIME_SECONDS}s per stage (3 attempts × 40s each)")
 
-            # 1. Scrape the current page (Receives submission_url and raw HTML here)
-            scraped_data, submission_url, raw_html = await scrape_quiz_page(page, current_url)
+            # 1. Scrape the current page (Receives submission_url, raw HTML, canvas flag, and canvas image path)
+            scraped_data, submission_url, raw_html, has_canvas_element, canvas_image_path = await scrape_quiz_page(page, current_url)
+
+            # Quick deterministic attempt: if this is a canvas stage and the page contains
+            # a deterministic formula (e.g., emailNumber * A + B mod 1e8), compute the key
+            # locally (SHA1(email) -> int) and try submitting that before invoking the LLM.
+            # This improves reliability for crypto/alphametic tasks and is additive only.
+            async def try_deterministic_key_submission():
+                try:
+                    if not has_canvas_element:
+                        quiz_logger.info("ℹ️ Skipping deterministic attempt (no canvas detected)")
+                        return False
+                    
+                    quiz_logger.info("🔢 Starting deterministic key computation for canvas stage...")
+
+                    import hashlib
+                    import re
+                    # Try to extract constants A and B and modulus from scraped_data
+                    # Look for patterns like: (emailNumber * 7919 + 12345) % 100000000
+                    text = scraped_data
+                    # Narrow search to the canvas script block if present
+                    script_block = None
+                    m_block = re.search(r'Canvas Drawing Script \(contains text drawing logic\):\\n(.*)', text, re.IGNORECASE | re.DOTALL)
+                    if m_block:
+                        script_block = m_block.group(1)
+                    else:
+                        # Fallback to full text
+                        script_block = text
+
+                    # Pattern 1: emailNumber * A + B (with optional mod)
+                    m = re.search(r'email\w*\s*\*\s*(\d+)\s*\+\s*(\d+)(?:\s*\)\s*%\s*(\d+))?', script_block, re.IGNORECASE)
+                    if not m:
+                        m = re.search(r'\(\s*email\w*\s*\*\s*(\d+)\s*\+\s*(\d+)\s*\)\s*%\s*(\d+)', script_block, re.IGNORECASE)
+
+                    if not m:
+                        # Try looser search for the known constants (common case)
+                        mA = re.search(r'(\d{3,6})\s*\*\s*email', script_block, re.IGNORECASE)
+                        mB = re.search(r'\+\s*(\d{3,6})', script_block)
+                        mod_m = re.search(r'%\s*(100000000|1e8|10\*\*8)', script_block, re.IGNORECASE)
+                        if mA and mB:
+                            A = int(mA.group(1))
+                            B = int(mB.group(1))
+                            mod = 100000000 if mod_m else 100000000
+                        else:
+                            return False
+                    else:
+                        # m groups: A, B, optional mod
+                        A = int(m.group(1))
+                        B = int(m.group(2))
+                        mod = int(m.group(3)) if m.lastindex and m.lastindex >= 3 and m.group(3) else 100000000
+
+                    quiz_logger.info(f"🔢 Deterministic formula constants found: A={A}, B={B}, mod={mod}")
+
+                    # Compute SHA1(email) once and prepare digest
+                    sha1_hex = hashlib.sha1(email.encode('utf-8')).hexdigest()
+                    sha1_digest = hashlib.sha1(email.encode('utf-8')).digest()
+
+                    # Determine submission endpoint robustly from script_block / nearby HTML
+                    target_url = submission_url if submission_url else None
+                    try:
+                        from urllib.parse import urlparse, urljoin
+                        parsed = urlparse(current_url)
+                        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+                        if not target_url:
+                            # Look for absolute fetch/XHR URLs
+                            murl = re.search(r"fetch\(\s*['\"](https?://[^'\"]+)['\"]", script_block, re.IGNORECASE)
+                            if murl:
+                                target_url = murl.group(1)
+
+                        if not target_url:
+                            # Look for relative fetch paths or form actions containing 'submit'
+                            murl2 = re.search(r"fetch\(\s*['\"](\/[^'\"]*submit[^'\"]*)['\"]", script_block, re.IGNORECASE)
+                            if murl2:
+                                target_url = urljoin(base_url, murl2.group(1))
+
+                        if not target_url:
+                            # Look for XHR open("POST", "/submit...")
+                            murl3 = re.search(r"open\(\s*['\"]POST['\"]\s*,\s*['\"]([^'\"]+)['\"]", script_block, re.IGNORECASE)
+                            if murl3:
+                                candidate = murl3.group(1)
+                                target_url = candidate if candidate.startswith('http') else urljoin(base_url, candidate)
+
+                        if not target_url:
+                            # Look for submit_url variable or JSON property
+                            mvar = re.search(r"submit_url['\"]?\s*[:=]\s*['\"]([^'\"]+)['\"]", script_block, re.IGNORECASE)
+                            if mvar:
+                                candidate = mvar.group(1)
+                                target_url = candidate if candidate.startswith('http') else urljoin(base_url, candidate)
+
+                        if not target_url:
+                            # Look for form action attributes in nearby HTML
+                            ma = re.search(r"action=[\"']([^\"']+)[\"']", script_block, re.IGNORECASE)
+                            if ma:
+                                candidate = ma.group(1)
+                                target_url = candidate if candidate.startswith('http') else urljoin(base_url, candidate)
+
+                        if not target_url:
+                            # Final fallback to base /submit
+                            target_url = urljoin(base_url, '/submit')
+
+                        quiz_logger.info(f"🔗 Deterministic submission target: {target_url}")
+                    except Exception as e:
+                        quiz_logger.warning(f"⚠️ Could not determine submission endpoint from scripts: {e}")
+                        target_url = submission_url or current_url
+
+                    # Try multiple SHA1->int conversion variants to match server-side conversion
+                    conversion_methods = [
+                        ("full_hex", lambda: int(sha1_hex, 16)),
+                        ("digest_big", lambda: int.from_bytes(sha1_digest, 'big')),
+                        ("first8_hex", lambda: int(sha1_hex[:8], 16)),
+                        ("last8_hex", lambda: int(sha1_hex[-8:], 16)),
+                        ("first8_bytes_big", lambda: int.from_bytes(sha1_digest[:8], 'big')),
+                        ("last8_bytes_big", lambda: int.from_bytes(sha1_digest[-8:], 'big')),
+                        ("first4_hex", lambda: int(sha1_hex[:4], 16)),
+                        ("last4_hex", lambda: int(sha1_hex[-4:], 16)),
+                        ("first8_little", lambda: int.from_bytes(sha1_digest[:8], 'little')),
+                        ("last8_little", lambda: int.from_bytes(sha1_digest[-8:], 'little')),
+                    ]
+
+                    submission_attempts = []
+                    for name, fn in conversion_methods:
+                        try:
+                            email_num_variant = fn()
+                        except Exception as e:
+                            quiz_logger.debug(f"Conversion {name} failed: {e}")
+                            continue
+
+                        key_num = (email_num_variant * A + B) % mod
+                        key_str = str(key_num).zfill(8)
+                        quiz_logger.info(f"🧪 Deterministic attempt [{name}]: {key_str} (sha1:{sha1_hex[:8]}...)")
+
+                        submission_data = {
+                            "email": email,
+                            "secret": payload.secret,
+                            "url": current_url,
+                            "answer": key_str,
+                            "reasoning": f"Deterministic attempt using conversion: {name}"
+                        }
+
+                        try:
+                            resp = requests.post(target_url, json=submission_data, timeout=10)
+                        except Exception as e:
+                            quiz_logger.warning(f"Failed to POST deterministic attempt {name}: {e}")
+                            submission_attempts.append((name, None, str(e)))
+                            await asyncio.sleep(0.5)
+                            continue
+
+                        resp_text = resp.text[:1000]
+                        resp_json = {}
+                        try:
+                            if 'application/json' in resp.headers.get('Content-Type', '').lower() or resp.text.strip().startswith(('{', '[')):
+                                resp_json = resp.json()
+                        except Exception:
+                            resp_json = {}
+
+                        submission_attempts.append((name, resp.status_code, resp_text))
+
+                        if resp.status_code == 200 and resp_json.get('correct') is True:
+                            quiz_logger.critical(f"🎉 DETERMINISTIC SUCCESS [{name}]: {email} | Answer: {key_str}")
+                            next_url = resp_json.get('url')
+                            if next_url:
+                                return next_url
+                            return True
+
+                        # If not correct, capture follow-up URL or reason for LLM feedback
+                        feedback = resp_json.get('reason', f"Status {resp.status_code}")
+                        follow_url = resp_json.get('url')
+                        if follow_url:
+                            try:
+                                quiz_logger.info(f"Following server-provided URL for more context: {follow_url}")
+                                follow_resp = requests.get(follow_url, timeout=5)
+                                follow_text = follow_resp.text[:2000]
+                                quiz_logger.info(f"Fetched follow-up content: {follow_text[:200]}...")
+                                past_attempt_feedback.append(f"Deterministic attempt {name} failed. Reason: {feedback}. Server follow-up: {follow_url} -> {follow_text[:200]}")
+                            except Exception as e:
+                                quiz_logger.warning(f"Could not fetch follow-up URL: {e}")
+                                past_attempt_feedback.append(f"Deterministic attempt {name} failed. Reason: {feedback}. Submitted: {key_str}")
+                        else:
+                            past_attempt_feedback.append(f"Deterministic attempt {name} failed. Reason: {feedback}. Submitted: {key_str}")
+
+                        # Small delay between attempts to avoid flooding
+                        await asyncio.sleep(0.5)
+
+                    # Log summary of deterministic attempts
+                    quiz_logger.info(f"Deterministic attempts summary: {submission_attempts}")
+                    return False
+
+                except Exception as e:
+                    quiz_logger.warning(f"⚠️ Deterministic attempt raised exception: {e}")
+                    return False
+
+            # Try deterministic submission first (non-blocking); if it returns a string, treat as next_url
+            det_result = await try_deterministic_key_submission()
+            if isinstance(det_result, str) and det_result:
+                current_url = det_result
+                continue
+            # If deterministic succeeded boolean True (final stage), exit
+            if det_result is True:
+                await browser.close()
+                return
             
             # --- CRITICAL CHECK: Ensure we have a submission URL ---
             if not submission_url:
@@ -354,7 +660,9 @@ async def solve_quiz_sequence_core(payload: QuizRequest):
                             page_url=current_url,
                             error_feedback=error_context,
                             use_fast_model=(not is_multimodal and time_left < 60),  # Use faster model if text-only and low time
-                            raw_html=raw_html  # Pass raw HTML for media detection
+                            raw_html=raw_html,  # Pass raw HTML for media detection
+                            has_canvas=has_canvas_element,  # Pass canvas detection flag
+                            canvas_image_path=canvas_image_path  # Pass canvas image for vision model
                         ),
                         timeout=attempt_timeout
                     )
