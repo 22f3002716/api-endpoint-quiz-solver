@@ -2033,6 +2033,9 @@ def submit():
     url = data.get('url', '')
     answer = data.get('answer', '').strip()
     
+    # Extract base URL from the submitted URL (to support localhost/ngrok)
+    base_url = url.rsplit('/stage', 1)[0] if '/stage' in url else 'http://127.0.0.1:5000'
+    
     # Validate required fields (like demo quiz)
     if not email or not secret or not url or not answer:
         return jsonify({
@@ -2097,7 +2100,7 @@ def submit():
             return jsonify({
                 'correct': True,
                 'message': f'Correct! Moving to stage {next_stage}',
-                'url': f'http://127.0.0.1:5000/stage{next_stage}'
+                'url': f'{base_url}/stage{next_stage}'
             })
         else:
             # Quiz complete!
@@ -2111,7 +2114,7 @@ def submit():
         return jsonify({
             'correct': False,
             'message': f'Incorrect. Expected format like: {expected[:10]}...',
-            'url': f'http://127.0.0.1:5000{stage_url}'  # Return same stage for retry
+            'url': f'{base_url}{stage_url}'  # Return same stage for retry
         }), 400
 
 
