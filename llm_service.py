@@ -239,10 +239,10 @@ def get_adaptive_token_limit(scraped_data: str, question_text: str, has_canvas: 
     complexity = estimate_stage_complexity(scraped_data, question_text, has_canvas)
     
     token_limits = {
-        'simple': 1024,        # Basic extraction, single value answers (increased for verbose responses)
+        'simple': 512,         # Basic extraction, single value answers
         'medium': 1536,        # Moderate calculations, small datasets (increased for regex/validation)
         'complex': 2048,       # Large CSV/JSON, multi-step reasoning
-        'very_complex': 6144   # Audio/video transcription + data analysis (increased for multimodal)
+        'very_complex': 4096   # Audio/video transcription + data analysis (balanced for performance)
     }
     
     limit = token_limits[complexity]
